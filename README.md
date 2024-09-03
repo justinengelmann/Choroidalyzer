@@ -24,7 +24,7 @@ pip install torch torchvision torchaudio matplotlib tqdm pandas scikit-image sci
 If you want to use jupyter lab, optionally also install that.
 
 ```
-pip install juptyerlab
+pip install jupyterlab
 ```
 
 Download the code files from this repo, or "git clone" it.
