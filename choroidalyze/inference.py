@@ -27,13 +27,16 @@ class Choroidalyzer:
 
     def __init__(self, model_name='default', device='cpu',
                  default_scale=DEFAULT_SCALE, default_thresholds=DEFAULT_THRESHOLDS,
-                 img_transforms=None, local_weights_path=None):
+                 img_transforms=None, local_weights_path=None,
+                 override_fovea_to_center=False, macula_rum=3000):
         self.model_name = model_name
         self.device = device
         self.default_scale = default_scale
         self.default_thresholds = default_thresholds
         self.img_transforms = img_transforms or get_default_img_transforms()
         self.local_weights_path = local_weights_path
+        self.override_fovea_to_center = override_fovea_to_center
+        self.macula_rum = macula_rum
 
         self._init_model()
         self.outputs = ['region', 'vessel', 'fovea']
@@ -82,13 +85,21 @@ class Choroidalyzer:
         vessel_mask = preds[1].ge(thresholds[1])
         region_mask = region_mask.cpu().numpy()
         vessel_mask = vessel_mask.cpu().numpy()
+        
+        if not self.override_fovea_to_center:
+            fov_loc = self.process_fovea_prediction(preds.unsqueeze(0))
+        else:
+            fov_loc = None
 
-        fov_loc = self.process_fovea_prediction(preds.unsqueeze(0))
-
-        raw_thickness, area, vascular_index, choroid_vessel_area = compute_measurement(reg_mask=region_mask,
-                                                                                       vess_mask=vessel_mask,
-                                                                                       fovea=fov_loc,
-                                                                                       scale=scale)
+        try:
+            raw_thickness, area, vascular_index, choroid_vessel_area = compute_measurement(reg_mask=region_mask,
+                                                                                           vess_mask=vessel_mask,
+                                                                                           fovea=fov_loc,
+                                                                                           macula_rum=self.macula_rum,
+                                                                                           scale=scale)
+        except ValueError as e:
+            raise ValueError(f'Metrics calculation failed with the following error: {e}\nThis might be due to the fovea detection failing or the region of interest being too large.')
+            
         thickness = np.mean(raw_thickness)
         return {'thickness': thickness, 'area': area, 'vascular_index': vascular_index,
                 'vessel_area': choroid_vessel_area, 'raw_thickness': raw_thickness}
