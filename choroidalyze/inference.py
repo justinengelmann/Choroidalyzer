@@ -156,6 +156,8 @@ class Choroidalyzer:
 
         fig, axes = plt.subplots(2, 2, figsize=(10, 10))
         img = self._load_image_if_needed(img_path)
+        if img.ndim == 2: # add dummy channel dim if needed
+            img = img.unsqueeze(0)
 
         axes[0, 0].imshow(img.permute(1, 2, 0), cmap='gray')
         axes[0, 0].set_title('Original Image')
