@@ -1,8 +1,11 @@
+import os
 import numpy as np
 import skimage as sk
 import matplotlib.pyplot as plt
 import logging
 import pandas as pd
+from PIL import Image
+from .ppole import ppole_grid, ppole_map, bscan_utils
 
 
 def extract_bounds(mask):
@@ -277,6 +280,9 @@ def construct_line(p1, p2):
     return m, c
 
 
+
+
+
 def compute_measurement(reg_mask,
                         vess_mask=None,
                         fovea: [tuple, np.ndarray] = None,
@@ -285,6 +291,7 @@ def compute_measurement(reg_mask,
                         N_measures: int = 3,
                         N_avgs=0,
                         offset=15,
+                        method='vertical',
                         plottable=False,
                         verbose=0):
     """
@@ -306,6 +313,9 @@ def compute_measurement(reg_mask,
         one column, set as 0.
     offset : Number of pixel columns to define tangent line around upper boundary reference points, for
         accurate, perpendicular detection of lower boundary points.
+    method : str, default='vertical'
+        Method to measure choroid, either 'vertical' or 'pependicular'. The latter measures the choroid
+        according to any skew in the chorioretinal tissue, while the former measures per A-scan.
     plottable : If flagged, returnboundary points defining where thicknesses have been measured, and binary masks
         where choroid area and vascular index have been measured.
     verbose : Log to user regarding segmentation length.
@@ -370,16 +380,21 @@ def compute_measurement(reg_mask,
         return np.array(N_measures * [0], dtype=np.int64), 0, 0
 
     # Collect reference points along upper boundary - we can compute more robust thickness as
-    # average value of several adjacent thicknesses using N_avgs. ALso compute corresponding
-    # perpendicular reference points along lower boundary
+    # average value of several adjacent thicknesses using N_avgs. 
     rpechor_pts = np.unique(np.array(
         [top_chor[[idx + np.arange(-N_avgs // 2, N_avgs // 2 + 1)]] for loc in curve_indexes for idx in loc]).reshape(
         -1, 2), axis=0)
     st_Bx = bot_chor[0, 0]
-    chorscl_pts = bot_chor[rpechor_pts[:, 0] - st_Bx]
+
+    # Compute corresponding reference points along lower boundary depending on preferred method of measurement
+    if method == "perpendicular":
+        chorscl_pts, rpechor_pts, perps, _ = bscan_utils.detect_orthogonal_pts(rpechor_pts, traces, offset)
+    elif method == "vertical":
+        chorscl_pts = bot_chor[rpechor_pts[:,0]-st_Bx]
+
+    # Collect boundary points to compute thickness with
     chorscl_pts = chorscl_pts.reshape(N_measures, N_avgs + 1, 2)
     rpechor_pts = rpechor_pts.reshape(N_measures, N_avgs + 1, 2)
-
     boundary_pts = np.concatenate([rpechor_pts.reshape(*chorscl_pts.shape), chorscl_pts], axis=-1).reshape(
         *chorscl_pts.shape, 2)
 
@@ -530,3 +545,192 @@ def compute_area_enclosed(traces,
         outputs = choroid_mm_area
 
     return outputs
+
+
+
+def compute_measure_maps(rvfmasks, 
+                         threshold, 
+                         fovea_slice_num, 
+                         fovea, 
+                         scale, 
+                         method='vertical',
+                         save_visualisations=False, 
+                         fname=None, 
+                         save_path=None,
+                         img_list=None):
+    '''
+    Generate choroid macular maps and measure ETDRS subfield for region and vascularity.
+    '''
+    # Core variables needed throughout
+    ppole_keys = ["choroid_thickness", "choroid_vessel"]
+    ppole_units = ['[um]', '[um2]']
+    etdrs_size = [1000,3000,6000] # Default diameters of ETDRS circular regions
+    N_scans, _, M, N = rvfmasks.shape
+    slo_N = N # Assume that the theoretical SLO image to blow-up map resolution is same lateral width as OCT
+    fovea_at_slo = np.array([N//2, N//2]) # For visualisation only, set the theoretical fovea in the middle of SLO
+    bscan_scale = (scale[0], scale[1])
+    scaleZ = scale[-1]
+    eye = None # Needed to orient grid for nasal and temporal subfields
+
+    # Empty dicts for results
+    map_dict = {}
+    measure_dict = {}
+    volmeasure_dict = {}
+    ctmap_args = {}
+    ctmap_args['core'] = [np.zeros((N,N)), fname, save_path]
+
+    # Post-process choroid region/vessel segmentations
+    rmasks = []
+    rtraces = []
+    vmasks = []
+    for i, rvf_i in enumerate(rvfmasks):
+        rmask = rvf_i[0]
+        trace = bscan_utils.get_trace(rvf_i[0], threshold, align=False)
+        rtraces.append(trace)
+        rmasks.append((rmask > threshold).astype(int))
+    rmasks = np.array(rmasks)
+    vmasks = np.array([rmask*rvf_i[1] for (rmask, rvf_i) in zip(rmasks, rvfmasks)])
+    ppole_segs = [rmasks, rmasks]
+
+    # If eye is not provided, infer from x-indices of fovea-centred lower choroid trace
+    fov_chortrace = rtraces[fovea_slice_num][1]
+    if eye is None:
+        if fov_chortrace[0,0] > N - fov_chortrace[-1,0]:
+            eye = 'Left'
+        else:
+            eye = 'Right'
+
+    # Loop over segmented layers and generate user-specified maps
+    print('Computing and measuring choroid thickness, volume and vessel maps...')
+    for idx, (key, seg) in enumerate(zip(ppole_keys, ppole_segs)):
+    
+        # Log to user and take special care for choroid_vessel map
+        print(f"    {key} map")
+        ves_chorsegs = None
+        if key == 'choroid_vessel':
+            ves_chorsegs = vmasks
+    
+        # Compute map
+        map_output = ppole_map.construct_map(seg,
+                                            fovea, 
+                                            fovea_slice_num, 
+                                            bscan_scale, 
+                                            scaleZ,
+                                            slo_N=slo_N, 
+                                            oct_N=N,
+                                            log_list=[],
+                                            ves_chorsegs=ves_chorsegs,
+                                            measure_type=method)
+    
+        
+        # Populate lists for looping over to measure ETDRS grid, note that for the choroid
+        # vessel map we measure vessel density and vessel area/volume
+        if key == "choroid_thickness":
+            macular_map, _ = map_output
+            maps_to_measure = [macular_map]
+            map_units = ['[um]']
+            map_keys = ["choroid_thickness"]
+            fname_keys = [fname+'_'+k+'etdrs_map' for k in map_keys]
+            dtypes = [np.uint64]
+        else:
+            macular_map, cvi_map, _ = map_output
+            maps_to_measure = [macular_map, cvi_map]
+            map_units = ['[um2]', '']
+            map_keys = ["choroid_vessel", "choroid_CVI"]
+            dtypes = [np.uint64, np.float64]
+        fname_keys = [fname+'_'+k+f'_etdrs_{u}_map' for k,u in zip(map_keys, map_units)]
+
+        # Measure grids on the maps and save out in dedicated folder 
+        for (macular_map, dtype, fname_key, map_key) in zip(maps_to_measure, dtypes, fname_keys, map_keys):
+
+            # For logging end-user of map inteprolation for ETDRS subfield measurement
+            verbose = True
+            if map_key == 'choroid_CVI':
+                verbose = False                
+    
+            # Measure ETDRS subfields on map
+            grid_measure_output = ppole_grid.measure_grid(macular_map, 
+                                                        fovea_at_slo, 
+                                                        bscan_scale[0], 
+                                                        eye, 
+                                                        etdrs_size=etdrs_size,
+                                                        plot=save_visualisations, 
+                                                        slo=np.zeros((slo_N, slo_N)), 
+                                                        dtype=dtype,
+                                                        verbose=verbose,
+                                                        fname=fname_key, 
+                                                        save_path=save_path)
+            grid_output, gridvol_output, _ = grid_measure_output
+    
+            # Append results to dictionaries
+            measure_dict[map_key] = grid_output
+            if map_key != 'choroid_CVI':
+                volmeasure_dict[map_key] = gridvol_output
+            map_dict[map_key] = pd.DataFrame(macular_map)
+    
+            # Necessary for visualisation
+            ctmap_args[map_key] = [macular_map, 
+                                   fovea_at_slo, 
+                                   bscan_scale[0], 
+                                   eye, 
+                                   0, 
+                                   dtype,
+                                   grid_output, 
+                                   gridvol_output]
+    
+            # Save out macular maps as .npy files 
+            if save_visualisations:
+                np.save(os.path.join(save_path, f"{fname_key}.npy"), macular_map)
+
+
+    # Save out thickness maps together Overlay segmentations 
+    if save_visualisations:
+        print('Saving out key visualisations...')
+        ppole_grid.plot_multiple_grids(ctmap_args)
+    
+        # Load in B-scan data for final visualisation
+        bscan_data = np.array([np.array(Image.open(p)) for p in img_list])
+        
+        # Save out fovea-centred B-scan segmentation visualisation
+        fovea_vmask = vmasks[fovea_slice_num]
+        fovea_vcmap = np.concatenate([fovea_vmask[...,np.newaxis]] 
+                + 2*[np.zeros_like(fovea_vmask)[...,np.newaxis]] 
+                + [fovea_vmask[...,np.newaxis] > 0.01], axis=-1)
+        
+        # Plot segmentations over fovea-centred B-scan
+        fig, (ax0,ax) = plt.subplots(1,2,figsize=(12,6))
+        ax0.imshow(bscan_data[fovea_slice_num], cmap='gray')
+        ax.imshow(bscan_data[fovea_slice_num], cmap="gray")
+        for t in rtraces[fovea_slice_num]:
+            ax.plot(t[:,0],t[:,1], label='_ignore', zorder=2, c='r', linewidth=2, linestyle='--')
+        ax.scatter(fovea[0], fovea[1], s=200, marker="X", edgecolor=(0,0,0), color="r", linewidth=1, zorder=3, label='Detected fovea position')
+        ax.imshow(fovea_vcmap, alpha=0.5, zorder=2)
+        ax.axis([0, N-1, M-1, 0])
+        ax.legend(fontsize=16)
+        ax.set_axis_off()
+        ax0.set_axis_off()
+        fig.tight_layout(pad = 0)
+        fig.savefig(os.path.join(save_path, f"{fname}_fovea_octseg.png"), bbox_inches="tight")
+        plt.close()
+    
+        # Stitch all B-scans to create "contact sheet" for checking
+        # Organise stacking of B-scans into rows & columns
+        if N_scans in [61,31,45,7]:
+            if N_scans == 61:
+                reshape_idx = (10,6)
+            elif N_scans == 31:
+                reshape_idx = (5,6)
+            elif N_scans == 45:
+                reshape_idx = (11,4)
+            elif N_scans == 7:
+                reshape_idx = (2,3)
+            bscan_utils.plot_composite_bscans(bscan_data, 
+                                              rtraces,
+                                              vmasks, 
+                                              fovea_slice_num, 
+                                              reshape_idx, 
+                                              fname, 
+                                              save_path)
+        print('Done!')
+
+    return measure_dict, volmeasure_dict
