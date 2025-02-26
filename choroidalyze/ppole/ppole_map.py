@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import torch
 import matplotlib.pyplot as plt
 import seaborn as sns
-from tqdm.autonotebook import tqdm
+from tqdm import tqdm
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from scipy.ndimage import gaussian_filter, median_filter
 
