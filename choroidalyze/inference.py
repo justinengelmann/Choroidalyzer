@@ -22,6 +22,8 @@ def get_default_img_transforms():
 class Choroidalyzer:
     DEFAULT_MODEL_URL = 'https://github.com/justinengelmann/Choroidalyzer/releases/download/' \
                         'v1.0/choroidalyzer_model_weights.pth'
+    AMD_MODEL_URL = 'https://github.com/justinengelmann/Choroidalyzer/releases/download/' \
+                    'vchoroidalyzer-amd/choroidalyzer_amd_3ch_statedict.pth'
     DEFAULT_SCALE = (11.49, 3.87)
     DEFAULT_THRESHOLDS = (0.5, 0.5, 0.1)
 
@@ -43,14 +45,16 @@ class Choroidalyzer:
         self.fovea_signal_filter = None
 
     def _init_model(self):
-        assert self.model_name == 'default', 'Only default model is supported at this time'
+        model_urls = {'default': self.DEFAULT_MODEL_URL, 'amd': self.AMD_MODEL_URL}
+        if self.model_name not in model_urls:
+            raise ValueError(f'Unknown model_name: {self.model_name!r}. Choose "default" or "amd".')
 
         self.model = UNet(in_channels=1, out_channels=3, depth=7, channels='8_doublemax-64',
                           up_type='conv_then_interpolate', extra_out_conv=True)
         if self.local_weights_path:
             state_dict = torch.load(self.local_weights_path, map_location='cpu')
         else:
-            state_dict = torch.hub.load_state_dict_from_url(self.DEFAULT_MODEL_URL, map_location='cpu')
+            state_dict = torch.hub.load_state_dict_from_url(model_urls[self.model_name], map_location='cpu')
 
         self.model.load_state_dict(state_dict)
         self.model.eval()

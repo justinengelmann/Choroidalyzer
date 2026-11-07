@@ -1,5 +1,7 @@
 # Choroidalyzer: An open-source, end-to-end pipeline for choroidal analysis in optical coherence tomography
 
+**New — November 2026:** Choroidalyzer-AMD weights added! See [usage below](#choroidalyzer-amd-weights). More details coming soon!
+
 ## Choroidalyzer
 ![image](https://github.com/justinengelmann/Choroidalyzer/assets/43992544/86399fc5-1acd-4128-ac4d-6dc106bbc064)
 
@@ -48,6 +50,21 @@ print(metrics)
 *If you have any trouble running Choroidalyzer, please reach out and we'll be glad to help!*
 
 You can also access the raw segmentations with choroidalyzer.predict() or visualise them with choroidalyzer.predict_and_plot(). See the [Example Usage](https://github.com/justinengelmann/Choroidalyzer/blob/main/ExampleUsage.ipynb) notebook for more examples.
+
+## Choroidalyzer-AMD weights
+
+To use the [Choroidalyzer-AMD weights](https://github.com/justinengelmann/Choroidalyzer/releases/tag/vchoroidalyzer-amd), select `model_name="amd"`:
+
+```python
+from choroidalyze import Choroidalyzer
+
+choroidalyzer = Choroidalyzer(model_name="amd")
+metrics = choroidalyzer.analyze('example_data/image1.png')
+```
+
+The AMD weights are downloaded automatically on first use and cached separately from the original weights. This release is currently marked as a pre-release; more details are coming soon.
+
+`Choroidalyzer()` (or `Choroidalyzer(model_name="default")`) continues to use the original weights. Both models support the same analysis, prediction, and plotting methods. You can also supply a compatible local checkpoint using `local_weights_path`.
 
 ## Advanced Usage
 
